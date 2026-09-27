@@ -6,6 +6,7 @@ import { useEffect } from "react";
 import {
   Circle,
   CircleMarker,
+  LayersControl,
   MapContainer,
   Marker,
   TileLayer,
@@ -15,6 +16,7 @@ import {
 } from "react-leaflet";
 import { scoreColor } from "@/lib/score";
 import type { ScoredTown } from "./AreaFinder";
+import { VectorBasemap } from "./VectorBasemap";
 
 export type LatLng = { lat: number; lng: number };
 
@@ -28,6 +30,52 @@ type Props = {
   onHover: (postal: string | null) => void;
   onSelect: (postal: string) => void;
 };
+
+const OSM_DATA = '施設データ &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
+
+// 登録不要・無料で公開サイトでも使える地図
+// OpenFreeMap はベクタータイル（帰属表示はスタイル側から自動で入る）、地理院は画像タイル
+type Basemap =
+  | { name: string; kind: "vector"; styleUrl: string }
+  | { name: string; kind: "raster"; url: string; attribution: string; maxZoom: number };
+
+const BASEMAPS: Basemap[] = [
+  { name: "標準（OpenFreeMap Liberty）", kind: "vector", styleUrl: "https://tiles.openfreemap.org/styles/liberty" },
+  { name: "淡色（OpenFreeMap Positron）", kind: "vector", styleUrl: "https://tiles.openfreemap.org/styles/positron" },
+  {
+    name: "地理院 淡色地図",
+    kind: "raster",
+    url: "https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png",
+    attribution: `<a href="https://maps.gsi.go.jp/development/ichiran.html">地理院タイル</a> | ${OSM_DATA}`,
+    maxZoom: 18,
+  },
+];
+
+// 最後に選んだ地図を覚えておく（保存できない環境では既定の地図）
+const BASEMAP_KEY = "area-score:basemap";
+function loadBasemap() {
+  try {
+    const saved = localStorage.getItem(BASEMAP_KEY);
+    if (BASEMAPS.some((b) => b.name === saved)) return saved!;
+  } catch {
+    // 読めなければ既定
+  }
+  return BASEMAPS[0].name;
+}
+const initialBasemap = loadBasemap();
+
+function BasemapMemory() {
+  useMapEvents({
+    baselayerchange: (e) => {
+      try {
+        localStorage.setItem(BASEMAP_KEY, e.name);
+      } catch {
+        // 保存できなくても続行
+      }
+    },
+  });
+  return null;
+}
 
 const centerIcon = L.divIcon({
   className: "",
@@ -55,12 +103,18 @@ function FlyTo({ center, radiusKm, token }: { center: LatLng; radiusKm: number; 
 export default function MapView({ center, radiusKm, towns, highlighted, flyToken, onPick, onHover, onSelect }: Props) {
   return (
     <MapContainer center={center} zoom={13} className="h-full w-full" scrollWheelZoom>
-      <TileLayer
-        attribution='<a href="https://maps.gsi.go.jp/development/ichiran.html">地理院タイル</a> | 施設データ &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-        url="https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png"
-        maxZoom={18}
-      />
-      <ClickHandler onPick={onPick} />
+      <LayersControl position="topright">
+        {BASEMAPS.map((b) => (
+          <LayersControl.BaseLayer key={b.name} name={b.name} checked={b.name === initialBasemap}>
+            {b.kind === "vector" ? (
+              <VectorBasemap styleUrl={b.styleUrl} />
+            ) : (
+              <TileLayer attribution={b.attribution} url={b.url} maxZoom={b.maxZoom} />
+            )}
+          </LayersControl.BaseLayer>
+        ))}
+      </LayersControl>
+      <BasemapMemory />      <ClickHandler onPick={onPick} />
       <FlyTo center={center} radiusKm={radiusKm} token={flyToken} />
       <Circle
         center={center}

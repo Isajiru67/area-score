@@ -40,3 +40,5 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
+# MapLibre の worker（scripts/copy-maplibre-worker.mjs がコピー）
+/public/maplibre
