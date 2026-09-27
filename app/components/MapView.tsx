@@ -13,18 +13,20 @@ import {
   useMap,
   useMapEvents,
 } from "react-leaflet";
-import type { Town } from "@/lib/geo";
+import { scoreColor } from "@/lib/score";
+import type { ScoredTown } from "./AreaFinder";
 
 export type LatLng = { lat: number; lng: number };
 
 type Props = {
   center: LatLng;
   radiusKm: number;
-  towns: Town[];
+  towns: ScoredTown[];
   highlighted: string | null;
   flyToken: number; // 値が変わったら中心へ移動（住所検索時など）
   onPick: (p: LatLng) => void;
   onHover: (postal: string | null) => void;
+  onSelect: (postal: string) => void;
 };
 
 const centerIcon = L.divIcon({
@@ -50,7 +52,7 @@ function FlyTo({ center, radiusKm, token }: { center: LatLng; radiusKm: number; 
   return null;
 }
 
-export default function MapView({ center, radiusKm, towns, highlighted, flyToken, onPick, onHover }: Props) {
+export default function MapView({ center, radiusKm, towns, highlighted, flyToken, onPick, onHover, onSelect }: Props) {
   return (
     <MapContainer center={center} zoom={13} className="h-full w-full" scrollWheelZoom>
       <TileLayer
@@ -78,24 +80,27 @@ export default function MapView({ center, radiusKm, towns, highlighted, flyToken
       />
       {towns.map((t) => {
         const active = t.postal === highlighted;
+        const fill = t.score ? scoreColor(t.score.total) : "#f97316";
         return (
           <CircleMarker
             key={t.postal}
             center={{ lat: t.lat, lng: t.lng }}
-            radius={active ? 9 : 5}
+            radius={active ? 10 : 7}
+            bubblingMouseEvents={false} // 地図クリック（中心移動）に伝播させない
             pathOptions={{
-              color: active ? "#dc2626" : "#ea580c",
-              fillColor: active ? "#dc2626" : "#f97316",
-              fillOpacity: 0.85,
-              weight: active ? 3 : 1,
+              color: active ? "#18181b" : "#ffffff",
+              fillColor: fill,
+              fillOpacity: 0.9,
+              weight: active ? 3 : 1.5,
             }}
             eventHandlers={{
               mouseover: () => onHover(t.postal),
               mouseout: () => onHover(null),
+              click: () => onSelect(t.postal),
             }}
           >
-            <Tooltip direction="top" offset={[0, -4]}>
-              〒{t.postal} {t.city}
+            <Tooltip direction="top" offset={[0, -6]}>
+              {t.score && <b>{t.score.total}点 </b>}〒{t.postal} {t.city}
               {t.town}
             </Tooltip>
           </CircleMarker>

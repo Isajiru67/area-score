@@ -1,8 +1,9 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Town } from "@/lib/geo";
+import { CRITERIA, scoreArea, scoreColor, type AreaScore, type Facility } from "@/lib/score";
 import type { LatLng } from "./MapView";
 
 // Leaflet は window を使うのでブラウザでのみ読み込む
@@ -13,55 +14,91 @@ const MapView = dynamic(() => import("./MapView"), {
 
 const INITIAL_CENTER: LatLng = { lat: 35.6812, lng: 139.7671 }; // 東京駅
 
+export type ScoredTown = Town & { score: AreaScore | null };
+
+type Load<T> = { data: T; loading: boolean; error: string | null };
+
+/**
+ * center/radius が変わったら少し待ってから取得する（スライダー操作中の連打防止）。
+ * 古いリクエストの結果は捨てる。
+ */
+function useAreaFetch<T>(path: string, pick: (json: unknown) => T, empty: T, center: LatLng, radiusKm: number) {
+  const [state, setState] = useState<Load<T>>({ data: empty, loading: false, error: null });
+  const requestId = useRef(0);
+  const pickRef = useRef(pick);
+
+  useEffect(() => {
+    const id = ++requestId.current;
+    const t = setTimeout(async () => {
+      setState((s) => ({ ...s, loading: true, error: null }));
+      try {
+        const res = await fetch(`${path}?lat=${center.lat}&lng=${center.lng}&r=${radiusKm}`);
+        const json = await res.json();
+        if (id !== requestId.current) return;
+        if (!res.ok) throw new Error(json.error ?? "取得に失敗しました");
+        setState({ data: pickRef.current(json), loading: false, error: null });
+      } catch (e) {
+        if (id === requestId.current) setState({ data: empty, loading: false, error: (e as Error).message });
+      }
+    }, 600);
+    return () => clearTimeout(t);
+    // empty は初期値としてのみ使う
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [path, center, radiusKm]);
+
+  return state;
+}
+
+const NO_TOWNS: Town[] = [];
+const NO_FACILITIES: Facility[] = [];
+
 export default function AreaFinder() {
   const [center, setCenter] = useState<LatLng>(INITIAL_CENTER);
   const [radiusKm, setRadiusKm] = useState(2);
-  const [towns, setTowns] = useState<Town[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [highlighted, setHighlighted] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [sortBy, setSortBy] = useState<"score" | "distance">("score");
   const [flyToken, setFlyToken] = useState(0);
   const [query, setQuery] = useState("");
-  const requestId = useRef(0);
+  const [searchError, setSearchError] = useState<string | null>(null);
 
-  const fetchTowns = useCallback(async (c: LatLng, r: number) => {
-    const id = ++requestId.current;
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(`/api/towns?lat=${c.lat}&lng=${c.lng}&r=${r}`);
-      const json = await res.json();
-      if (id !== requestId.current) return; // 古いリクエストの結果は捨てる
-      if (!res.ok) throw new Error(json.error ?? "取得に失敗しました");
-      setTowns(json.towns);
-    } catch (e) {
-      if (id === requestId.current) {
-        setError((e as Error).message);
-        setTowns([]);
-      }
-    } finally {
-      if (id === requestId.current) setLoading(false);
+  const towns = useAreaFetch("/api/towns", (j) => (j as { towns: Town[] }).towns, NO_TOWNS, center, radiusKm);
+  const facilities = useAreaFetch(
+    "/api/facilities",
+    (j) => (j as { facilities: Facility[] }).facilities,
+    NO_FACILITIES,
+    center,
+    radiusKm,
+  );
+
+  const scored = useMemo<ScoredTown[]>(() => {
+    const hasFacilities = facilities.data.length > 0;
+    const list = towns.data.map((t) => ({
+      ...t,
+      score: hasFacilities ? scoreArea(t.lat, t.lng, facilities.data) : null,
+    }));
+    if (sortBy === "score" && hasFacilities) {
+      list.sort((a, b) => b.score!.total - a.score!.total || a.distanceKm - b.distanceKm);
     }
-  }, []);
+    return list;
+  }, [towns.data, facilities.data, sortBy]);
 
-  // 中心・半径が変わったら少し待ってから再検索（スライダー操作中の連打防止）
-  useEffect(() => {
-    const t = setTimeout(() => fetchTowns(center, radiusKm), 400);
-    return () => clearTimeout(t);
-  }, [center, radiusKm, fetchTowns]);
+  const avg = scored.length && scored[0].score
+    ? Math.round(scored.reduce((s, t) => s + (t.score?.total ?? 0), 0) / scored.length)
+    : null;
 
   // 国土地理院の住所検索APIで地名・住所から中心を移動
   async function searchAddress(e: React.FormEvent) {
     e.preventDefault();
     if (!query.trim()) return;
-    setError(null);
+    setSearchError(null);
     try {
       const res = await fetch(
         `https://msearch.gsi.go.jp/address-search/AddressSearch?q=${encodeURIComponent(query.trim())}`,
       );
       const json = await res.json();
       if (!json.length) {
-        setError(`「${query}」が見つかりませんでした`);
+        setSearchError(`「${query}」が見つかりませんでした`);
         return;
       }
       // 先頭が最適とは限らない（「武蔵小杉駅」→瑞穂町武蔵 等）ので、完全一致→部分一致→先頭の順で選ぶ
@@ -76,14 +113,24 @@ export default function AreaFinder() {
       setCenter({ lat, lng });
       setFlyToken((n) => n + 1);
     } catch {
-      setError("住所検索に失敗しました");
+      setSearchError("住所検索に失敗しました");
     }
   }
 
   function downloadCsv() {
-    const header = "郵便番号,都道府県,市区町村,町域,中心からの距離(km)";
-    const rows = towns.map((t) => [t.postal, t.prefecture, t.city, t.town, t.distanceKm].join(","));
-    const blob = new Blob(["﻿" + [header, ...rows].join("\n")], { type: "text/csv" });
+    const header = ["郵便番号", "都道府県", "市区町村", "町域", "中心からの距離(km)", "スコア", ...CRITERIA.map((c) => `${c.label}(件)`), "最寄り駅(m)"];
+    const rows = scored.map((t) => [
+      t.postal,
+      t.prefecture,
+      t.city,
+      t.town,
+      t.distanceKm,
+      t.score?.total ?? "",
+      ...CRITERIA.map((c) => t.score?.breakdown.find((b) => b.key === c.key)?.count ?? ""),
+      t.score?.breakdown.find((b) => b.key === "station")?.nearestM ?? "",
+    ]);
+    const csv = [header, ...rows].map((r) => r.join(",")).join("\n");
+    const blob = new Blob(["﻿" + csv], { type: "text/csv" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = `area_${center.lat.toFixed(4)}_${center.lng.toFixed(4)}_${radiusKm}km.csv`;
@@ -91,23 +138,26 @@ export default function AreaFinder() {
     URL.revokeObjectURL(a.href);
   }
 
+  const loading = towns.loading || facilities.loading;
+
   return (
     <div className="flex h-dvh flex-col md:flex-row">
       <div className="relative h-[50dvh] md:h-full md:flex-1">
         <MapView
           center={center}
           radiusKm={radiusKm}
-          towns={towns}
+          towns={scored}
           highlighted={highlighted}
           flyToken={flyToken}
           onPick={setCenter}
           onHover={setHighlighted}
+          onSelect={(postal) => setExpanded(postal)}
         />
       </div>
 
-      <aside className="flex min-h-0 flex-1 flex-col border-zinc-200 bg-white md:w-[420px] md:flex-none md:border-l dark:border-zinc-800 dark:bg-zinc-950">
+      <aside className="flex min-h-0 flex-1 flex-col border-zinc-200 bg-white md:w-[440px] md:flex-none md:border-l dark:border-zinc-800 dark:bg-zinc-950">
         <div className="space-y-3 border-b border-zinc-200 p-4 dark:border-zinc-800">
-          <h1 className="text-lg font-bold">エリア検索</h1>
+          <h1 className="text-lg font-bold">エリア住みやすさスコア</h1>
           <p className="text-xs text-zinc-500">地図をクリック（またはピンをドラッグ）して中心を指定</p>
 
           <form onSubmit={searchAddress} className="flex gap-2">
@@ -155,39 +205,136 @@ export default function AreaFinder() {
             </span>
             <button
               onClick={downloadCsv}
-              disabled={!towns.length}
+              disabled={!scored.length}
               className="rounded border border-zinc-300 px-2 py-1 disabled:opacity-40 dark:border-zinc-700"
             >
               CSV出力
             </button>
           </div>
+
+          <details className="text-xs text-zinc-500">
+            <summary className="cursor-pointer">スコアの計算方法（100点満点）</summary>
+            <ul className="mt-1 space-y-0.5">
+              {CRITERIA.map((c) => (
+                <li key={c.key}>
+                  <span className="inline-block w-8 text-right font-mono">{c.weight}</span>点 {c.label}：{c.description}
+                </li>
+              ))}
+              <li className="pt-1">件数は対数カーブで加点（最初の数件ほど効く）。施設データ: OpenStreetMap（Overpass API）。町の代表点からの距離で数えています。</li>
+            </ul>
+          </details>
         </div>
 
-        <div className="flex items-center justify-between px-4 py-2 text-sm">
-          <span>{loading ? "検索中…" : `${towns.length} 件（郵便番号単位）`}</span>
-          {error && <span className="text-red-600">{error}</span>}
+        <div className="flex items-center justify-between gap-2 px-4 py-2 text-sm">
+          <span>
+            {towns.loading
+              ? "住所を検索中…"
+              : `${scored.length} 件`}
+            {facilities.loading && <span className="ml-2 text-xs text-zinc-500">施設データ取得中…</span>}
+            {avg !== null && !loading && <span className="ml-2 text-xs text-zinc-500">平均 {avg} 点</span>}
+          </span>
+          <div className="flex overflow-hidden rounded border border-zinc-300 text-xs dark:border-zinc-700">
+            {(["score", "distance"] as const).map((k) => (
+              <button
+                key={k}
+                onClick={() => setSortBy(k)}
+                className={`px-2 py-1 ${sortBy === k ? "bg-zinc-800 text-white dark:bg-zinc-200 dark:text-zinc-900" : ""}`}
+              >
+                {k === "score" ? "スコア順" : "距離順"}
+              </button>
+            ))}
+          </div>
         </div>
+        {(towns.error || facilities.error || searchError) && (
+          <p className="px-4 pb-2 text-xs text-red-600">{searchError ?? towns.error ?? facilities.error}</p>
+        )}
 
-        <ul className={`min-h-0 flex-1 overflow-y-auto ${loading ? "opacity-50" : ""}`}>
-          {towns.map((t) => (
-            <li
+        <ul className={`min-h-0 flex-1 overflow-y-auto ${towns.loading ? "opacity-50" : ""}`}>
+          {scored.map((t) => (
+            <TownRow
               key={t.postal}
-              onMouseEnter={() => setHighlighted(t.postal)}
-              onMouseLeave={() => setHighlighted(null)}
-              className={`flex items-baseline gap-3 border-b border-zinc-100 px-4 py-2 text-sm dark:border-zinc-900 ${
-                highlighted === t.postal ? "bg-orange-50 dark:bg-orange-950/40" : ""
-              }`}
-            >
-              <span className="font-mono text-xs text-zinc-500">〒{t.postal}</span>
-              <span className="flex-1">
-                {t.city}
-                <span className="font-semibold">{t.town}</span>
-              </span>
-              <span className="font-mono text-xs text-zinc-500">{t.distanceKm.toFixed(2)}km</span>
-            </li>
+              town={t}
+              highlighted={highlighted === t.postal}
+              expanded={expanded === t.postal}
+              onHover={setHighlighted}
+              onToggle={() => setExpanded((p) => (p === t.postal ? null : t.postal))}
+            />
           ))}
         </ul>
       </aside>
     </div>
+  );
+}
+
+function TownRow({
+  town: t,
+  highlighted,
+  expanded,
+  onHover,
+  onToggle,
+}: {
+  town: ScoredTown;
+  highlighted: boolean;
+  expanded: boolean;
+  onHover: (postal: string | null) => void;
+  onToggle: () => void;
+}) {
+  const ref = useRef<HTMLLIElement>(null);
+  useEffect(() => {
+    if (expanded) ref.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [expanded]);
+
+  return (
+    <li
+      ref={ref}
+      onMouseEnter={() => onHover(t.postal)}
+      onMouseLeave={() => onHover(null)}
+      className={`border-b border-zinc-100 text-sm dark:border-zinc-900 ${
+        highlighted || expanded ? "bg-orange-50 dark:bg-orange-950/40" : ""
+      }`}
+    >
+      <button onClick={onToggle} className="flex w-full items-center gap-3 px-4 py-2 text-left">
+        <span
+          className="grid h-8 w-10 shrink-0 place-items-center rounded font-mono text-sm font-bold text-white"
+          style={{ background: t.score ? scoreColor(t.score.total) : "#a1a1aa" }}
+        >
+          {t.score ? t.score.total : "–"}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block font-mono text-xs text-zinc-500">〒{t.postal}</span>
+          <span>
+            {t.city}
+            <span className="font-semibold">{t.town}</span>
+          </span>
+        </span>
+        <span className="font-mono text-xs text-zinc-500">{t.distanceKm.toFixed(2)}km</span>
+      </button>
+
+      {expanded && t.score && (
+        <table className="mx-4 mb-3 w-[calc(100%-2rem)] text-xs">
+          <tbody>
+            {t.score.breakdown.map((b) => (
+              <tr key={b.key}>
+                <td className="py-0.5 pr-2">{b.label}</td>
+                <td className="pr-2 text-right font-mono text-zinc-500">
+                  {b.key === "station" ? (b.nearestM === null ? "なし" : `${b.nearestM}m`) : `${b.count}件`}
+                </td>
+                <td className="w-24">
+                  <div className="h-1.5 rounded bg-zinc-200 dark:bg-zinc-800">
+                    <div
+                      className="h-1.5 rounded bg-emerald-500"
+                      style={{ width: `${(b.points / b.weight) * 100}%` }}
+                    />
+                  </div>
+                </td>
+                <td className="w-14 text-right font-mono">
+                  {b.points}/{b.weight}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </li>
   );
 }
