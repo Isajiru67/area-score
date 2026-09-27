@@ -56,8 +56,9 @@ export default function MapView({ center, radiusKm, towns, highlighted, flyToken
   return (
     <MapContainer center={center} zoom={13} className="h-full w-full" scrollWheelZoom>
       <TileLayer
-        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        attribution='<a href="https://maps.gsi.go.jp/development/ichiran.html">地理院タイル</a> | 施設データ &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        url="https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png"
+        maxZoom={18}
       />
       <ClickHandler onPick={onPick} />
       <FlyTo center={center} radiusKm={radiusKm} token={flyToken} />

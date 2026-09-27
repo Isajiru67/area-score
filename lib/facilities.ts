@@ -1,8 +1,9 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
-import { MAX_CRITERION_RADIUS_M, type Category, type Facility } from "@/lib/score";
+import { cacheGet, cacheSet } from "./browserCache";
+import { sleep, withTimeout } from "./fetchUtil";
+import { MAX_CRITERION_RADIUS_M, type Category, type Facility } from "./score";
+import { MAX_RADIUS_KM } from "./towns";
 
-// 公開 Overpass サーバー。混雑時は 504/429 がすぐ返ってくることが多く、
+// 公開 Overpass サーバー（ブラウザから直接呼べる）。混雑時は 504/429 がすぐ返ってくることが多く、
 // 少し待って再送すれば通ることがほとんどなので、交互にリトライする。
 // （kumi.systems / private.coffee は応答せず60秒待たされることが多いので使わない）
 const ENDPOINTS = [
@@ -10,8 +11,6 @@ const ENDPOINTS = [
   "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
 ];
 const MAX_ATTEMPTS = 8;
-const CACHE_DIR = path.join(process.cwd(), ".cache", "facilities");
-const MAX_RADIUS_KM = 15;
 
 // OSM タグ → スコアのカテゴリ
 const TAG_RULES: { key: string; values: string[]; category: Category }[] = [
@@ -48,18 +47,16 @@ function categorize(tags: Record<string, string>): Category | null {
   return null;
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-async function queryOverpass(query: string) {
+async function queryOverpass(query: string, signal?: AbortSignal) {
   let lastError: unknown;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const url = ENDPOINTS[attempt % ENDPOINTS.length];
     try {
       const res = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": "area-score/0.1" },
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({ data: query }),
-        signal: AbortSignal.timeout(70_000),
+        signal: withTimeout(signal, 70_000),
       });
       if (!res.ok) throw new Error(`Overpass ${res.status}`);
       const json = await res.json();
@@ -69,34 +66,31 @@ async function queryOverpass(query: string) {
       }
       return json.elements as OsmElement[];
     } catch (e) {
+      if (signal?.aborted) throw e;
       lastError = e;
       console.warn(`[facilities] ${new URL(url).host} 失敗 (${attempt + 1}/${MAX_ATTEMPTS}): ${(e as Error).message}`);
-      await sleep(Math.min(2000 * (attempt + 1), 8000));
+      await sleep(Math.min(2000 * (attempt + 1), 8000), signal);
     }
   }
   throw lastError;
 }
 
-// 同じ場所・半径の再検索はキャッシュから返す（Overpass の負荷軽減）。
-// メモリに加えて .cache/ にも保存し、サーバー再起動後も使い回す。
-const cache = new Map<string, Promise<Facility[]>>();
+/** 円＋周辺（スコア計算に必要な範囲）の施設を取得する。同じ場所・半径はブラウザに保存した結果を使う */
+export async function fetchFacilities(lat: number, lng: number, radiusKm: number, signal?: AbortSignal) {
+  if (radiusKm > MAX_RADIUS_KM) throw new Error(`半径は ${MAX_RADIUS_KM}km 以下にしてください`);
 
-async function cachedFacilities(key: string, lat: number, lng: number, radiusKm: number) {
-  const file = path.join(CACHE_DIR, `${key.replaceAll(",", "_")}.json`);
+  const key = `facilities:${lat.toFixed(4)},${lng.toFixed(4)},${radiusKm}`;
+  const cached = cacheGet<Facility[]>(key, 30);
+  if (cached) return cached;
+
+  let elements: OsmElement[];
   try {
-    return JSON.parse(await readFile(file, "utf-8")) as Facility[];
-  } catch {
-    // キャッシュなし
+    elements = await queryOverpass(buildQuery(lat, lng, radiusKm * 1000 + MAX_CRITERION_RADIUS_M), signal);
+  } catch (e) {
+    if (signal?.aborted) throw e;
+    throw new Error(`施設データの取得に失敗しました（Overpass API が混雑中の可能性があります）: ${(e as Error).message}`);
   }
-  const facilities = await fetchFacilities(lat, lng, radiusKm);
-  await mkdir(CACHE_DIR, { recursive: true });
-  await writeFile(file, JSON.stringify(facilities));
-  return facilities;
-}
 
-async function fetchFacilities(lat: number, lng: number, radiusKm: number) {
-  const radiusM = radiusKm * 1000 + MAX_CRITERION_RADIUS_M;
-  const elements = await queryOverpass(buildQuery(lat, lng, radiusM));
   const facilities: Facility[] = [];
   for (const el of elements) {
     const category = el.tags && categorize(el.tags);
@@ -105,33 +99,6 @@ async function fetchFacilities(lat: number, lng: number, radiusKm: number) {
     if (!category || fLat === undefined || fLng === undefined) continue;
     facilities.push([category, Math.round(fLat * 1e6) / 1e6, Math.round(fLng * 1e6) / 1e6]);
   }
+  cacheSet(key, facilities);
   return facilities;
-}
-
-export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url);
-  const lat = Number(searchParams.get("lat"));
-  const lng = Number(searchParams.get("lng"));
-  const radiusKm = Number(searchParams.get("r"));
-
-  if (!Number.isFinite(lat) || !Number.isFinite(lng) || !(radiusKm > 0)) {
-    return Response.json({ error: "lat, lng, r を指定してください" }, { status: 400 });
-  }
-  if (radiusKm > MAX_RADIUS_KM) {
-    return Response.json({ error: `半径は ${MAX_RADIUS_KM}km 以下にしてください` }, { status: 400 });
-  }
-
-  const key = `${lat.toFixed(4)},${lng.toFixed(4)},${radiusKm}`;
-  let p = cache.get(key);
-  if (!p) {
-    p = cachedFacilities(key, lat, lng, radiusKm);
-    p.catch(() => cache.delete(key));
-    cache.set(key, p);
-  }
-
-  try {
-    return Response.json({ facilities: await p });
-  } catch (e) {
-    return Response.json({ error: `施設データの取得に失敗しました（Overpass API が混雑中の可能性があります）: ${(e as Error).message}` }, { status: 502 });
-  }
 }

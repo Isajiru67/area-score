@@ -2,8 +2,10 @@
 
 import dynamic from "next/dynamic";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { fetchFacilities } from "@/lib/facilities";
 import type { Town } from "@/lib/geo";
 import { CRITERIA, scoreArea, scoreColor, type AreaScore, type Facility } from "@/lib/score";
+import { fetchTowns } from "@/lib/towns";
 import type { LatLng } from "./MapView";
 
 // Leaflet は window を使うのでブラウザでのみ読み込む
@@ -17,35 +19,34 @@ const INITIAL_CENTER: LatLng = { lat: 35.6812, lng: 139.7671 }; // 東京駅
 export type ScoredTown = Town & { score: AreaScore | null };
 
 type Load<T> = { data: T; loading: boolean; error: string | null };
+type Loader<T> = (lat: number, lng: number, radiusKm: number, signal: AbortSignal) => Promise<T>;
 
 /**
  * center/radius が変わったら少し待ってから取得する（スライダー操作中の連打防止）。
- * 古いリクエストの結果は捨てる。
+ * 条件が変わったら前のリクエストは中断する。
  */
-function useAreaFetch<T>(path: string, pick: (json: unknown) => T, empty: T, center: LatLng, radiusKm: number) {
+function useAreaFetch<T>(load: Loader<T>, empty: T, center: LatLng, radiusKm: number) {
   const [state, setState] = useState<Load<T>>({ data: empty, loading: false, error: null });
   const [reloadToken, setReloadToken] = useState(0);
-  const requestId = useRef(0);
-  const pickRef = useRef(pick);
 
   useEffect(() => {
-    const id = ++requestId.current;
+    const ctrl = new AbortController();
     const t = setTimeout(async () => {
       setState((s) => ({ ...s, loading: true, error: null }));
       try {
-        const res = await fetch(`${path}?lat=${center.lat}&lng=${center.lng}&r=${radiusKm}`);
-        const json = await res.json();
-        if (id !== requestId.current) return;
-        if (!res.ok) throw new Error(json.error ?? "取得に失敗しました");
-        setState({ data: pickRef.current(json), loading: false, error: null });
+        const data = await load(center.lat, center.lng, radiusKm, ctrl.signal);
+        if (!ctrl.signal.aborted) setState({ data, loading: false, error: null });
       } catch (e) {
-        if (id === requestId.current) setState({ data: empty, loading: false, error: (e as Error).message });
+        if (!ctrl.signal.aborted) setState({ data: empty, loading: false, error: (e as Error).message });
       }
     }, 600);
-    return () => clearTimeout(t);
-    // empty は初期値としてのみ使う
+    return () => {
+      clearTimeout(t);
+      ctrl.abort();
+    };
+    // load / empty はモジュール定数を渡す前提
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path, center, radiusKm, reloadToken]);
+  }, [center, radiusKm, reloadToken]);
 
   return { ...state, reload: () => setReloadToken((n) => n + 1) };
 }
@@ -63,14 +64,8 @@ export default function AreaFinder() {
   const [query, setQuery] = useState("");
   const [searchError, setSearchError] = useState<string | null>(null);
 
-  const towns = useAreaFetch("/api/towns", (j) => (j as { towns: Town[] }).towns, NO_TOWNS, center, radiusKm);
-  const facilities = useAreaFetch(
-    "/api/facilities",
-    (j) => (j as { facilities: Facility[] }).facilities,
-    NO_FACILITIES,
-    center,
-    radiusKm,
-  );
+  const towns = useAreaFetch(fetchTowns, NO_TOWNS, center, radiusKm);
+  const facilities = useAreaFetch(fetchFacilities, NO_FACILITIES, center, radiusKm);
 
   const scored = useMemo<ScoredTown[]>(() => {
     const hasFacilities = facilities.data.length > 0;
