@@ -24,6 +24,7 @@ type Load<T> = { data: T; loading: boolean; error: string | null };
  */
 function useAreaFetch<T>(path: string, pick: (json: unknown) => T, empty: T, center: LatLng, radiusKm: number) {
   const [state, setState] = useState<Load<T>>({ data: empty, loading: false, error: null });
+  const [reloadToken, setReloadToken] = useState(0);
   const requestId = useRef(0);
   const pickRef = useRef(pick);
 
@@ -44,9 +45,9 @@ function useAreaFetch<T>(path: string, pick: (json: unknown) => T, empty: T, cen
     return () => clearTimeout(t);
     // empty は初期値としてのみ使う
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path, center, radiusKm]);
+  }, [path, center, radiusKm, reloadToken]);
 
-  return state;
+  return { ...state, reload: () => setReloadToken((n) => n + 1) };
 }
 
 const NO_TOWNS: Town[] = [];
@@ -230,7 +231,9 @@ export default function AreaFinder() {
             {towns.loading
               ? "住所を検索中…"
               : `${scored.length} 件`}
-            {facilities.loading && <span className="ml-2 text-xs text-zinc-500">施設データ取得中…</span>}
+            {facilities.loading && (
+              <span className="ml-2 text-xs text-zinc-500">施設データ取得中…（混雑時は1〜2分かかります）</span>
+            )}
             {avg !== null && !loading && <span className="ml-2 text-xs text-zinc-500">平均 {avg} 点</span>}
           </span>
           <div className="flex overflow-hidden rounded border border-zinc-300 text-xs dark:border-zinc-700">
@@ -245,8 +248,16 @@ export default function AreaFinder() {
             ))}
           </div>
         </div>
-        {(towns.error || facilities.error || searchError) && (
-          <p className="px-4 pb-2 text-xs text-red-600">{searchError ?? towns.error ?? facilities.error}</p>
+        {(towns.error || searchError) && (
+          <p className="px-4 pb-2 text-xs text-red-600">{searchError ?? towns.error}</p>
+        )}
+        {facilities.error && !facilities.loading && (
+          <div className="mx-4 mb-2 flex items-center gap-2 rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
+            <span className="flex-1">{facilities.error}</span>
+            <button onClick={facilities.reload} className="shrink-0 rounded bg-red-600 px-2 py-1 text-white">
+              再取得
+            </button>
+          </div>
         )}
 
         <ul className={`min-h-0 flex-1 overflow-y-auto ${towns.loading ? "opacity-50" : ""}`}>

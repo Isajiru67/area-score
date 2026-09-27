@@ -1,11 +1,16 @@
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { MAX_CRITERION_RADIUS_M, type Category, type Facility } from "@/lib/score";
 
-// 公開 Overpass サーバー（混雑して 504 等が返ることがよくあるので、失敗したら次を試す）
+// 公開 Overpass サーバー。混雑時は 504/429 がすぐ返ってくることが多く、
+// 少し待って再送すれば通ることがほとんどなので、交互にリトライする。
+// （kumi.systems / private.coffee は応答せず60秒待たされることが多いので使わない）
 const ENDPOINTS = [
   "https://overpass-api.de/api/interpreter",
   "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
-  "https://overpass.kumi.systems/api/interpreter",
 ];
+const MAX_ATTEMPTS = 8;
+const CACHE_DIR = path.join(process.cwd(), ".cache", "facilities");
 const MAX_RADIUS_KM = 15;
 
 // OSM タグ → スコアのカテゴリ
@@ -43,28 +48,51 @@ function categorize(tags: Record<string, string>): Category | null {
   return null;
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 async function queryOverpass(query: string) {
   let lastError: unknown;
-  for (const url of ENDPOINTS) {
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const url = ENDPOINTS[attempt % ENDPOINTS.length];
     try {
       const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": "area-score/0.1" },
         body: new URLSearchParams({ data: query }),
-        signal: AbortSignal.timeout(60_000),
+        signal: AbortSignal.timeout(70_000),
       });
       if (!res.ok) throw new Error(`Overpass ${res.status}`);
       const json = await res.json();
+      // タイムアウト等は 200 + remark で返ってくることがある
+      if (json.remark && /runtime error|timed out|out of memory/i.test(json.remark)) {
+        throw new Error(`Overpass: ${json.remark}`);
+      }
       return json.elements as OsmElement[];
     } catch (e) {
       lastError = e;
+      console.warn(`[facilities] ${new URL(url).host} 失敗 (${attempt + 1}/${MAX_ATTEMPTS}): ${(e as Error).message}`);
+      await sleep(Math.min(2000 * (attempt + 1), 8000));
     }
   }
   throw lastError;
 }
 
-// 同じ場所・半径の再検索はキャッシュから返す（Overpass の負荷軽減）
+// 同じ場所・半径の再検索はキャッシュから返す（Overpass の負荷軽減）。
+// メモリに加えて .cache/ にも保存し、サーバー再起動後も使い回す。
 const cache = new Map<string, Promise<Facility[]>>();
+
+async function cachedFacilities(key: string, lat: number, lng: number, radiusKm: number) {
+  const file = path.join(CACHE_DIR, `${key.replaceAll(",", "_")}.json`);
+  try {
+    return JSON.parse(await readFile(file, "utf-8")) as Facility[];
+  } catch {
+    // キャッシュなし
+  }
+  const facilities = await fetchFacilities(lat, lng, radiusKm);
+  await mkdir(CACHE_DIR, { recursive: true });
+  await writeFile(file, JSON.stringify(facilities));
+  return facilities;
+}
 
 async function fetchFacilities(lat: number, lng: number, radiusKm: number) {
   const radiusM = radiusKm * 1000 + MAX_CRITERION_RADIUS_M;
@@ -96,7 +124,7 @@ export async function GET(request: Request) {
   const key = `${lat.toFixed(4)},${lng.toFixed(4)},${radiusKm}`;
   let p = cache.get(key);
   if (!p) {
-    p = fetchFacilities(lat, lng, radiusKm);
+    p = cachedFacilities(key, lat, lng, radiusKm);
     p.catch(() => cache.delete(key));
     cache.set(key, p);
   }
@@ -104,6 +132,6 @@ export async function GET(request: Request) {
   try {
     return Response.json({ facilities: await p });
   } catch (e) {
-    return Response.json({ error: `施設データの取得に失敗しました: ${(e as Error).message}` }, { status: 502 });
+    return Response.json({ error: `施設データの取得に失敗しました（Overpass API が混雑中の可能性があります）: ${(e as Error).message}` }, { status: 502 });
   }
 }
