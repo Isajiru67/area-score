@@ -1,5 +1,5 @@
 import { cacheGet, cacheSet } from "./browserCache";
-import { sleep, withTimeout } from "./fetchUtil";
+import { sleep, withTimeout, type OnProgress } from "./fetchUtil";
 import { MAX_CRITERION_RADIUS_M, type Category, type Facility } from "./score";
 import { MAX_RADIUS_KM } from "./towns";
 
@@ -47,10 +47,16 @@ function categorize(tags: Record<string, string>): Category | null {
   return null;
 }
 
-async function queryOverpass(query: string, signal?: AbortSignal) {
+async function queryOverpass(query: string, signal?: AbortSignal, onProgress?: OnProgress) {
   let lastError: unknown;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const url = ENDPOINTS[attempt % ENDPOINTS.length];
+    onProgress?.({
+      message:
+        attempt === 0
+          ? "周辺の施設を取得中（OpenStreetMap）"
+          : `サーバーが混雑しているため再試行中（${attempt + 1}/${MAX_ATTEMPTS}回目）`,
+    });
     try {
       const res = await fetch(url, {
         method: "POST",
@@ -76,7 +82,13 @@ async function queryOverpass(query: string, signal?: AbortSignal) {
 }
 
 /** 円＋周辺（スコア計算に必要な範囲）の施設を取得する。同じ場所・半径はブラウザに保存した結果を使う */
-export async function fetchFacilities(lat: number, lng: number, radiusKm: number, signal?: AbortSignal) {
+export async function fetchFacilities(
+  lat: number,
+  lng: number,
+  radiusKm: number,
+  signal?: AbortSignal,
+  onProgress?: OnProgress,
+) {
   if (radiusKm > MAX_RADIUS_KM) throw new Error(`半径は ${MAX_RADIUS_KM}km 以下にしてください`);
 
   const key = `facilities:${lat.toFixed(4)},${lng.toFixed(4)},${radiusKm}`;
@@ -85,7 +97,7 @@ export async function fetchFacilities(lat: number, lng: number, radiusKm: number
 
   let elements: OsmElement[];
   try {
-    elements = await queryOverpass(buildQuery(lat, lng, radiusKm * 1000 + MAX_CRITERION_RADIUS_M), signal);
+    elements = await queryOverpass(buildQuery(lat, lng, radiusKm * 1000 + MAX_CRITERION_RADIUS_M), signal, onProgress);
   } catch (e) {
     if (signal?.aborted) throw e;
     throw new Error(`施設データの取得に失敗しました（Overpass API が混雑中の可能性があります）: ${(e as Error).message}`);

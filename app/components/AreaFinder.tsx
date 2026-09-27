@@ -3,9 +3,11 @@
 import dynamic from "next/dynamic";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchFacilities } from "@/lib/facilities";
+import type { OnProgress, Progress } from "@/lib/fetchUtil";
 import type { Town } from "@/lib/geo";
 import { CRITERIA, scoreArea, scoreColor, type AreaScore, type Facility } from "@/lib/score";
 import { fetchTowns } from "@/lib/towns";
+import LoadingStatus from "./LoadingStatus";
 import type { LatLng } from "./MapView";
 
 // Leaflet は window を使うのでブラウザでのみ読み込む
@@ -18,26 +20,49 @@ const INITIAL_CENTER: LatLng = { lat: 33.5897, lng: 130.4207 }; // 博多駅
 
 export type ScoredTown = Town & { score: AreaScore | null };
 
-type Load<T> = { data: T; loading: boolean; error: string | null };
-type Loader<T> = (lat: number, lng: number, radiusKm: number, signal: AbortSignal) => Promise<T>;
+type Load<T> = {
+  data: T;
+  loading: boolean;
+  error: string | null;
+  progress: Progress | null;
+  startedAt: number | null;
+};
+type Loader<T> = (
+  lat: number,
+  lng: number,
+  radiusKm: number,
+  signal: AbortSignal,
+  onProgress: OnProgress,
+) => Promise<T>;
 
 /**
  * center/radius が変わったら少し待ってから取得する（スライダー操作中の連打防止）。
  * 条件が変わったら前のリクエストは中断する。
  */
 function useAreaFetch<T>(load: Loader<T>, empty: T, center: LatLng, radiusKm: number) {
-  const [state, setState] = useState<Load<T>>({ data: empty, loading: false, error: null });
+  const [state, setState] = useState<Load<T>>({
+    data: empty,
+    loading: false,
+    error: null,
+    progress: null,
+    startedAt: null,
+  });
   const [reloadToken, setReloadToken] = useState(0);
 
   useEffect(() => {
     const ctrl = new AbortController();
     const t = setTimeout(async () => {
-      setState((s) => ({ ...s, loading: true, error: null }));
+      setState((s) => ({ ...s, loading: true, error: null, progress: null, startedAt: Date.now() }));
+      const onProgress: OnProgress = (progress) => {
+        if (!ctrl.signal.aborted) setState((s) => ({ ...s, progress }));
+      };
       try {
-        const data = await load(center.lat, center.lng, radiusKm, ctrl.signal);
-        if (!ctrl.signal.aborted) setState({ data, loading: false, error: null });
+        const data = await load(center.lat, center.lng, radiusKm, ctrl.signal, onProgress);
+        if (!ctrl.signal.aborted) setState({ data, loading: false, error: null, progress: null, startedAt: null });
       } catch (e) {
-        if (!ctrl.signal.aborted) setState({ data: empty, loading: false, error: (e as Error).message });
+        if (!ctrl.signal.aborted) {
+          setState({ data: empty, loading: false, error: (e as Error).message, progress: null, startedAt: null });
+        }
       }
     }, 600);
     return () => {
@@ -149,6 +174,16 @@ export default function AreaFinder() {
           onHover={setHighlighted}
           onSelect={(postal) => setExpanded(postal)}
         />
+        <LoadingStatus
+          steps={[
+            { label: "円の中の住所を検索", state: towns, doneText: `${towns.data.length} 件見つかりました` },
+            {
+              label: "周辺の施設を取得",
+              state: facilities,
+              doneText: `${facilities.data.length.toLocaleString()} 件の施設を取得しました`,
+            },
+          ]}
+        />
       </div>
 
       <aside className="flex min-h-0 flex-1 flex-col border-zinc-200 bg-white md:w-[440px] md:flex-none md:border-l dark:border-zinc-800 dark:bg-zinc-950">
@@ -223,11 +258,9 @@ export default function AreaFinder() {
 
         <div className="flex items-center justify-between gap-2 px-4 py-2 text-sm">
           <span>
-            {towns.loading
-              ? "住所を検索中…"
-              : `${scored.length} 件`}
-            {facilities.loading && (
-              <span className="ml-2 text-xs text-zinc-500">施設データ取得中…（混雑時は1〜2分かかります）</span>
+            {towns.loading ? "住所を検索中…" : `${scored.length} 件`}
+            {facilities.loading && !towns.loading && (
+              <span className="ml-2 text-xs text-zinc-500">スコア計算中…</span>
             )}
             {avg !== null && !loading && <span className="ml-2 text-xs text-zinc-500">平均 {avg} 点</span>}
           </span>
@@ -262,6 +295,7 @@ export default function AreaFinder() {
               town={t}
               highlighted={highlighted === t.postal}
               expanded={expanded === t.postal}
+              scoring={facilities.loading}
               onHover={setHighlighted}
               onToggle={() => setExpanded((p) => (p === t.postal ? null : t.postal))}
             />
@@ -276,12 +310,14 @@ function TownRow({
   town: t,
   highlighted,
   expanded,
+  scoring,
   onHover,
   onToggle,
 }: {
   town: ScoredTown;
   highlighted: boolean;
   expanded: boolean;
+  scoring: boolean;
   onHover: (postal: string | null) => void;
   onToggle: () => void;
 }) {
@@ -301,10 +337,13 @@ function TownRow({
     >
       <button onClick={onToggle} className="flex w-full items-center gap-3 px-4 py-2 text-left">
         <span
-          className="grid h-8 w-10 shrink-0 place-items-center rounded font-mono text-sm font-bold text-white"
+          className={`grid h-8 w-10 shrink-0 place-items-center rounded font-mono text-sm font-bold text-white ${
+            !t.score && scoring ? "animate-pulse" : ""
+          }`}
           style={{ background: t.score ? scoreColor(t.score.total) : "#a1a1aa" }}
+          title={!t.score && scoring ? "スコア計算中" : undefined}
         >
-          {t.score ? t.score.total : "–"}
+          {t.score ? t.score.total : scoring ? "…" : "–"}
         </span>
         <span className="min-w-0 flex-1">
           <span className="block font-mono text-xs text-zinc-500">〒{t.postal}</span>

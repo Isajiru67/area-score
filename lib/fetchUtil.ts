@@ -1,3 +1,7 @@
+/** 取得処理の途中経過（画面の進捗表示用）。ratio は 0〜1、分からないときは省略 */
+export type Progress = { message: string; ratio?: number };
+export type OnProgress = (p: Progress) => void;
+
 /** signal で中断できる sleep */
 export function sleep(ms: number, signal?: AbortSignal) {
   return new Promise<void>((resolve, reject) => {

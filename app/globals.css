@@ -34,3 +34,13 @@ body {
   box-shadow: 0 0 0 2px #2563eb, 0 2px 6px rgba(0, 0, 0, 0.4);
   cursor: grab;
 }
+
+/* 進み具合が分からない処理のプログレスバー（LoadingStatus） */
+@keyframes indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}

@@ -1,5 +1,5 @@
 import { cacheGet, cacheSet } from "./browserCache";
-import { mapLimit, sleep, withTimeout } from "./fetchUtil";
+import { mapLimit, sleep, withTimeout, type OnProgress } from "./fetchUtil";
 import { distanceKm, samplePoints, type Town } from "./geo";
 
 // 住所データ: HeartRails Geo API（郵便番号・町域・代表点の座標を返す無料API。ブラウザから直接呼べる）
@@ -62,23 +62,43 @@ function isBuilding(loc: HrLocation, townNames: string[]) {
 }
 
 /** 中心から半径 radiusKm の円に代表点が入る町域を、郵便番号単位で近い順に返す */
-export async function fetchTowns(lat: number, lng: number, radiusKm: number, signal?: AbortSignal) {
+export async function fetchTowns(
+  lat: number,
+  lng: number,
+  radiusKm: number,
+  signal?: AbortSignal,
+  onProgress?: OnProgress,
+) {
   if (radiusKm > MAX_RADIUS_KM) throw new Error(`半径は ${MAX_RADIUS_KM}km 以下にしてください`);
 
-  // 1. サンプル地点の最寄り町域から、円にかかる市区町村を洗い出す
-  const nearby = await mapLimit(samplePoints(lat, lng, radiusKm), 3, (p) =>
-    hr({ method: "searchByGeoLocation", x: String(p.lng), y: String(p.lat) }, signal).catch((e) => {
-      if (signal?.aborted) throw e;
-      return [];
-    }),
-  );
+  // 1. サンプル地点の最寄り町域から、円にかかる市区町村を洗い出す（進捗の 0〜70%）
+  const points = samplePoints(lat, lng, radiusKm);
+  let done = 0;
+  onProgress?.({ message: "円の中の市区町村を探しています", ratio: 0 });
+  const nearby = await mapLimit(points, 3, async (p) => {
+    const result = await hr({ method: "searchByGeoLocation", x: String(p.lng), y: String(p.lat) }, signal).catch(
+      (e) => {
+        if (signal?.aborted) throw e;
+        return [];
+      },
+    );
+    onProgress?.({ message: "円の中の市区町村を探しています", ratio: (++done / points.length) * 0.7 });
+    return result;
+  });
   const cities = new Map<string, { prefecture: string; city: string }>();
   for (const loc of nearby.flat()) {
     cities.set(`${loc.prefecture}|${loc.city}`, { prefecture: loc.prefecture, city: loc.city });
   }
 
-  // 2. 各市区町村の全町域を取得し、円内のものだけ残す
-  const townLists = await mapLimit([...cities.values()], 3, (c) => getTowns(c.prefecture, c.city, signal));
+  // 2. 各市区町村の全町域を取得し、円内のものだけ残す（進捗の 70〜100%）
+  const cityList = [...cities.values()];
+  done = 0;
+  const townLists = await mapLimit(cityList, 3, async (c) => {
+    onProgress?.({ message: `${c.city} の町名を取得中`, ratio: 0.7 + (done / cityList.length) * 0.3 });
+    const list = await getTowns(c.prefecture, c.city, signal);
+    done++;
+    return list;
+  });
 
   const byPostal = new Map<string, Town>();
   for (const list of townLists) {
