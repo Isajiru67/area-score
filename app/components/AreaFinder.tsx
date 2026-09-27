@@ -64,7 +64,15 @@ export default function AreaFinder() {
         setError(`「${query}」が見つかりませんでした`);
         return;
       }
-      const [lng, lat] = json[0].geometry.coordinates;
+      // 先頭が最適とは限らない（「武蔵小杉駅」→瑞穂町武蔵 等）ので、完全一致→部分一致→先頭の順で選ぶ
+      type Hit = { geometry: { coordinates: [number, number] }; properties: { title: string } };
+      const q = query.trim();
+      const hits = json as Hit[];
+      const best =
+        hits.find((h) => h.properties.title === q) ??
+        hits.find((h) => h.properties.title.includes(q)) ??
+        hits[0];
+      const [lng, lat] = best.geometry.coordinates;
       setCenter({ lat, lng });
       setFlyToken((n) => n + 1);
     } catch {
