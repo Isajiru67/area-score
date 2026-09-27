@@ -44,3 +44,13 @@ body {
     transform: translateX(300%);
   }
 }
+
+/* スマホではピンチで拡大縮小できるので、ズームボタンを隠して地図を広く使う */
+@media (max-width: 767px) {
+  .leaflet-control-zoom {
+    display: none;
+  }
+  .leaflet-control-attribution {
+    font-size: 9px;
+  }
+}

@@ -88,6 +88,8 @@ export default function AreaFinder() {
   const [flyToken, setFlyToken] = useState(0);
   const [query, setQuery] = useState("");
   const [searchError, setSearchError] = useState<string | null>(null);
+  // スマホ表示で一覧（各地域の情報）を見ているか。true の間は地図を縮めて一覧を広く見せる
+  const [listMode, setListMode] = useState(false);
 
   const towns = useAreaFetch(fetchTowns, NO_TOWNS, center, radiusKm);
   const facilities = useAreaFetch(fetchFacilities, NO_FACILITIES, center, radiusKm);
@@ -163,7 +165,13 @@ export default function AreaFinder() {
 
   return (
     <div className="flex h-dvh flex-col md:flex-row">
-      <div className="relative h-[50dvh] md:h-full md:flex-1">
+      {/* スマホでは一覧を見ている間は地図を縮める（PC では常に左側いっぱい） */}
+      <div
+        className={`relative shrink-0 transition-[height] duration-300 ease-out md:h-full md:flex-1 ${
+          listMode ? "h-[28dvh]" : "h-[50dvh]"
+        }`}
+        onPointerDown={() => setListMode(false)}
+      >
         <MapView
           center={center}
           radiusKm={radiusKm}
@@ -185,29 +193,49 @@ export default function AreaFinder() {
             },
           ]}
         />
+        {listMode && (
+          <button
+            onClick={() => setListMode(false)}
+            className="absolute bottom-10 left-1/2 z-[1000] -translate-x-1/2 rounded-full bg-white/95 px-3 py-1 text-xs font-medium shadow md:hidden dark:bg-zinc-900/95"
+          >
+            ▼ 地図を広げる
+          </button>
+        )}
       </div>
 
       <aside className="flex min-h-0 flex-1 flex-col border-zinc-200 bg-white md:w-[440px] md:flex-none md:border-l dark:border-zinc-800 dark:bg-zinc-950">
-        <div className="space-y-3 border-b border-zinc-200 p-4 dark:border-zinc-800">
-          <h1 className="text-lg font-bold">エリア住みやすさスコア</h1>
-          <p className="text-xs text-zinc-500">地図をクリック（またはピンをドラッグ）して中心を指定</p>
+        {/* gap は非表示の子要素に余白を作らない（space-y だと一覧表示中にタイトル下が空く） */}
+        <div className="flex flex-col gap-2 border-b border-zinc-200 px-4 py-3 md:gap-3 md:py-4 dark:border-zinc-800">
+          <h1 className="text-base font-bold md:text-lg">エリア住みやすさスコア</h1>
 
-          <form onSubmit={searchAddress} className="flex gap-2">
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="駅名・住所で移動（例: 武蔵小杉駅）"
-              className="min-w-0 flex-1 rounded border border-zinc-300 bg-transparent px-2 py-1.5 text-sm dark:border-zinc-700"
-            />
-            <button className="rounded bg-zinc-800 px-3 text-sm text-white dark:bg-zinc-200 dark:text-zinc-900">
-              移動
-            </button>
-          </form>
+          {/* スマホで一覧を見ている間は操作部を隠して一覧を広く見せる */}
+          <div className={`flex-col gap-2 md:flex md:gap-3 ${listMode ? "hidden" : "flex"}`}>
+            <p className="hidden text-xs text-zinc-500 md:block">地図をクリック（またはピンをドラッグ）して中心を指定</p>
 
-          <label className="block text-sm">
-            <div className="mb-1 flex justify-between">
-              <span>半径</span>
-              <span className="font-mono">
+            <form onSubmit={searchAddress} className="flex gap-2">
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="駅名・住所で移動（例: 天神駅）"
+                className="min-w-0 flex-1 rounded border border-zinc-300 bg-transparent px-2 py-1.5 text-base md:text-sm dark:border-zinc-700"
+              />
+              <button className="rounded bg-zinc-800 px-3 text-sm text-white dark:bg-zinc-200 dark:text-zinc-900">
+                移動
+              </button>
+            </form>
+
+            <label className="flex items-center gap-2 text-sm">
+              <span className="shrink-0">半径</span>
+              <input
+                type="range"
+                min={0.5}
+                max={15}
+                step={0.5}
+                value={radiusKm}
+                onChange={(e) => setRadiusKm(Number(e.target.value))}
+                className="min-w-0 flex-1"
+              />
+              <span className="shrink-0 font-mono">
                 <input
                   type="number"
                   min={0.1}
@@ -215,47 +243,44 @@ export default function AreaFinder() {
                   step={0.1}
                   value={radiusKm}
                   onChange={(e) => setRadiusKm(Math.min(15, Math.max(0.1, Number(e.target.value) || 0.1)))}
-                  className="w-16 rounded border border-zinc-300 bg-transparent px-1 text-right dark:border-zinc-700"
+                  className="w-14 rounded border border-zinc-300 bg-transparent px-1 text-right dark:border-zinc-700"
                 />{" "}
                 km
               </span>
+            </label>
+
+            <div className="flex items-center justify-between gap-2 text-xs text-zinc-500">
+              <details className="min-w-0">
+                <summary className="cursor-pointer">スコアの計算方法（100点満点）</summary>
+                <ul className="mt-1 space-y-0.5">
+                  {CRITERIA.map((c) => (
+                    <li key={c.key}>
+                      <span className="inline-block w-8 text-right font-mono">{c.weight}</span>点 {c.label}：
+                      {c.description}
+                    </li>
+                  ))}
+                  <li className="pt-1">
+                    件数は対数カーブで加点（最初の数件ほど効く）。施設データ: OpenStreetMap（Overpass
+                    API）。町の代表点からの距離で数えています。
+                  </li>
+                  <li>
+                    町域の境界: 政府統計の総合窓口（e-Stat）国勢調査
+                    小地域境界データ（令和2年）を加工して作成（現在は福岡県のみ）。
+                  </li>
+                  <li className="font-mono">
+                    中心: {center.lat.toFixed(5)}, {center.lng.toFixed(5)}
+                  </li>
+                </ul>
+              </details>
+              <button
+                onClick={downloadCsv}
+                disabled={!scored.length}
+                className="shrink-0 self-start rounded border border-zinc-300 px-2 py-1 disabled:opacity-40 dark:border-zinc-700"
+              >
+                CSV出力
+              </button>
             </div>
-            <input
-              type="range"
-              min={0.5}
-              max={15}
-              step={0.5}
-              value={radiusKm}
-              onChange={(e) => setRadiusKm(Number(e.target.value))}
-              className="w-full"
-            />
-          </label>
-
-          <div className="flex items-center justify-between text-xs text-zinc-500">
-            <span className="font-mono">
-              中心: {center.lat.toFixed(5)}, {center.lng.toFixed(5)}
-            </span>
-            <button
-              onClick={downloadCsv}
-              disabled={!scored.length}
-              className="rounded border border-zinc-300 px-2 py-1 disabled:opacity-40 dark:border-zinc-700"
-            >
-              CSV出力
-            </button>
           </div>
-
-          <details className="text-xs text-zinc-500">
-            <summary className="cursor-pointer">スコアの計算方法（100点満点）</summary>
-            <ul className="mt-1 space-y-0.5">
-              {CRITERIA.map((c) => (
-                <li key={c.key}>
-                  <span className="inline-block w-8 text-right font-mono">{c.weight}</span>点 {c.label}：{c.description}
-                </li>
-              ))}
-              <li className="pt-1">件数は対数カーブで加点（最初の数件ほど効く）。施設データ: OpenStreetMap（Overpass API）。町の代表点からの距離で数えています。</li>
-              <li>町域の境界: 政府統計の総合窓口（e-Stat）国勢調査 小地域境界データ（令和2年）を加工して作成（現在は福岡県のみ）。</li>
-            </ul>
-          </details>
         </div>
 
         <div className="flex items-center justify-between gap-2 px-4 py-2 text-sm">
@@ -290,7 +315,13 @@ export default function AreaFinder() {
           </div>
         )}
 
-        <ul className={`min-h-0 flex-1 overflow-y-auto ${towns.loading ? "opacity-50" : ""}`}>
+        <ul
+          className={`min-h-0 flex-1 overflow-y-auto ${towns.loading ? "opacity-50" : ""}`}
+          onScroll={(e) => {
+            // スマホで一覧を下にスクロールしたら地図を縮める
+            if (e.currentTarget.scrollTop > 24) setListMode(true);
+          }}
+        >
           {scored.map((t) => (
             <TownRow
               key={t.postal}
@@ -299,7 +330,11 @@ export default function AreaFinder() {
               expanded={expanded === t.postal}
               scoring={facilities.loading}
               onHover={setHighlighted}
-              onToggle={() => setExpanded((p) => (p === t.postal ? null : t.postal))}
+              onToggle={() => {
+                const opening = expanded !== t.postal;
+                setExpanded(opening ? t.postal : null);
+                if (opening) setListMode(true);
+              }}
             />
           ))}
         </ul>

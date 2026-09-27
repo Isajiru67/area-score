@@ -19,14 +19,15 @@ export default function LoadingStatus({ steps }: { steps: Step[] }) {
   if (!active) return null;
 
   return (
-    <div className="pointer-events-none absolute inset-x-0 top-3 z-[1000] flex justify-center px-14">
+    <div className="pointer-events-none absolute inset-x-0 top-2 z-[1000] flex justify-center pr-14 pl-2 md:top-3 md:pl-14">
       <div
         role="status"
         aria-live="polite"
-        className="w-full max-w-sm rounded-lg border border-zinc-200 bg-white/95 p-3 text-sm shadow-lg backdrop-blur dark:border-zinc-700 dark:bg-zinc-900/95"
+        className="w-full max-w-sm rounded-lg border border-zinc-200 bg-white/95 px-3 py-2 text-xs shadow-lg backdrop-blur md:p-3 md:text-sm dark:border-zinc-700 dark:bg-zinc-900/95"
       >
-        <p className="mb-2 font-semibold">スコアを計算しています</p>
-        <ol className="space-y-2">
+        {/* スマホは地図が小さいので見出しを省いてカードを低くする */}
+        <p className="mb-2 hidden font-semibold md:block">スコアを計算しています</p>
+        <ol className="space-y-1 md:space-y-2">
           {steps.map((step, i) => (
             <StepRow key={step.label} index={i + 1} step={step} now={now} />
           ))}
@@ -51,7 +52,7 @@ function StepRow({ index, step, now }: { index: number; step: Step; now: number 
           </span>
           {elapsed !== null && <span className="shrink-0 font-mono text-xs text-zinc-500">{elapsed}秒</span>}
         </div>
-        <p className="truncate text-xs text-zinc-500">
+        <p className="truncate text-[11px] text-zinc-500 md:text-xs">
           {loading ? (progress?.message ?? "準備中…") : error ? "失敗しました" : step.doneText}
         </p>
         {loading && <ProgressBar ratio={progress?.ratio} />}

@@ -3,7 +3,7 @@
 import "leaflet/dist/leaflet.css";
 import type { FeatureCollection } from "geojson";
 import L from "leaflet";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Circle,
   CircleMarker,
@@ -110,14 +110,38 @@ const BOUNDARY_ATTRIBUTION =
 
 type Boundary = Awaited<ReturnType<typeof findTownBoundary>>;
 
+/**
+ * 地図の表示枠の大きさが変わったとき（スマホで一覧を見ると地図が縮む）に Leaflet へ知らせる。
+ * 変化が落ち着いたら onSettled を呼ぶ。
+ */
+function AutoResize({ onSettled }: { onSettled: () => void }) {
+  const map = useMap();
+  useEffect(() => {
+    let t: ReturnType<typeof setTimeout>;
+    const ro = new ResizeObserver(() => {
+      map.invalidateSize({ pan: false });
+      clearTimeout(t);
+      t = setTimeout(onSettled, 150);
+    });
+    ro.observe(map.getContainer());
+    return () => {
+      ro.disconnect();
+      clearTimeout(t);
+    };
+  }, [map, onSettled]);
+  return null;
+}
+
 /** 町域の境界を囲んで表示する。境界データがない地域では何も描かない */
 function TownBoundary({
   town,
   variant,
+  sizeTick,
   onResolved,
 }: {
   town: ScoredTown;
   variant: "selected" | "hover";
+  sizeTick: number; // 地図の大きさが変わったら見える位置か確認し直す
   onResolved: (postal: string, found: boolean) => void;
 }) {
   const map = useMap();
@@ -150,8 +174,8 @@ function TownBoundary({
   useEffect(() => {
     if (variant !== "selected" || !data) return;
     const bounds = L.geoJSON(data).getBounds();
-    if (!map.getBounds().contains(bounds)) map.flyToBounds(bounds, { padding: [40, 40], maxZoom: 16, duration: 0.6 });
-  }, [data, variant, map]);
+    if (!map.getBounds().contains(bounds)) map.flyToBounds(bounds, { padding: [24, 24], maxZoom: 16, duration: 0.6 });
+  }, [data, variant, map, sizeTick]);
 
   if (!data) return null;
   const color = town.score ? scoreColor(town.score.total) : "#f97316";
@@ -183,6 +207,8 @@ export default function MapView({
 }: Props) {
   // 境界を表示できた町（点を大きくするのは境界がない町だけにする）
   const [outlined, setOutlined] = useState<Record<string, boolean>>({});
+  const [sizeTick, setSizeTick] = useState(0);
+  const onSizeSettled = useCallback(() => setSizeTick((n) => n + 1), []);
   const onResolved = (postal: string, found: boolean) =>
     setOutlined((o) => (o[postal] === found ? o : { ...o, [postal]: found }));
 
@@ -203,6 +229,7 @@ export default function MapView({
         ))}
       </LayersControl>
       <BasemapMemory />
+      <AutoResize onSettled={onSizeSettled} />
       <ClickHandler onPick={onPick} />
       <FlyTo center={center} radiusKm={radiusKm} token={flyToken} />
       <Circle
@@ -213,8 +240,10 @@ export default function MapView({
       />
       {/* 境界は町の点より下に描く（点のクリックを邪魔しない） */}
       <Pane name="boundaries" style={{ zIndex: 350 }}>
-        {selectedTown && <TownBoundary town={selectedTown} variant="selected" onResolved={onResolved} />}
-        {hoverTown && <TownBoundary town={hoverTown} variant="hover" onResolved={onResolved} />}
+        {selectedTown && (
+          <TownBoundary town={selectedTown} variant="selected" sizeTick={sizeTick} onResolved={onResolved} />
+        )}
+        {hoverTown && <TownBoundary town={hoverTown} variant="hover" sizeTick={sizeTick} onResolved={onResolved} />}
       </Pane>
       <Marker
         position={center}
