@@ -14,7 +14,7 @@ const MapView = dynamic(() => import("./MapView"), {
   loading: () => <div className="grid h-full place-items-center text-sm text-zinc-500">地図を読み込み中…</div>,
 });
 
-const INITIAL_CENTER: LatLng = { lat: 35.6812, lng: 139.7671 }; // 東京駅
+const INITIAL_CENTER: LatLng = { lat: 33.5897, lng: 130.4207 }; // 博多駅
 
 export type ScoredTown = Town & { score: AreaScore | null };
 
