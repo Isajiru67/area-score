@@ -169,6 +169,7 @@ export default function AreaFinder() {
           radiusKm={radiusKm}
           towns={scored}
           highlighted={highlighted}
+          selected={expanded}
           flyToken={flyToken}
           onPick={setCenter}
           onHover={setHighlighted}
@@ -252,6 +253,7 @@ export default function AreaFinder() {
                 </li>
               ))}
               <li className="pt-1">件数は対数カーブで加点（最初の数件ほど効く）。施設データ: OpenStreetMap（Overpass API）。町の代表点からの距離で数えています。</li>
+              <li>町域の境界: 政府統計の総合窓口（e-Stat）国勢調査 小地域境界データ（令和2年）を加工して作成（現在は福岡県のみ）。</li>
             </ul>
           </details>
         </div>
